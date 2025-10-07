@@ -4,6 +4,7 @@ import collections
 import numpy as np
 from transformers import VideoMAEImageProcessor, TimesformerForVideoClassification
 from PIL import Image
+from huggingface_hub import login
 
 # --- 1. Konfigurasi ---
 CAMERA_INDEX = 0                 # Ganti ke indeks kamera Anda
@@ -13,6 +14,10 @@ PREDICTION_BUFFER_SIZE = 30
 # --- 2. Deteksi Perangkat & Muat Model & Processor ---
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Menggunakan perangkat: {device}")
+
+# Ganti "hf_xxx..." dengan token Anda yang sebenarnya
+login(token="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") 
+# --------------------------------
 
 print("Memuat model TimeSformer...")
 # Model akan diunduh otomatis saat pertama kali dijalankan
