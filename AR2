@@ -1,0 +1,104 @@
+import cv2
+import torch
+import torchvision
+from torchvision import transforms # <- Kembali ke transform standar yang lebih stabil
+import collections
+from PIL import Image
+
+# --- 1. Konfigurasi ---
+CAMERA_INDEX = 0                 # Ganti ke indeks kamera Anda
+CLIP_LENGTH = 16                 # Jumlah frame dalam satu 'clip' untuk dianalisis
+MODEL_INPUT_SIZE = 128
+MODEL_CROP_SIZE = 112
+PREDICTION_BUFFER_SIZE = 30
+
+# --- 2. Deteksi Perangkat & Muat Model ---
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Menggunakan perangkat: {device}")
+
+print("Memuat model Action Recognition (R(2+1)D)...")
+model = torchvision.models.video.r2plus1d_18(pretrained=True)
+model = model.to(device)
+model.eval()
+
+# --- 3. Dapatkan Label Kelas Kinetics-400 ---
+with open("kinetics_400_labels.csv") as f:
+    categories = [line.strip() for line in f.readlines()]
+
+# --- 4. Siapkan Transformasi Input (untuk SATU frame) ---
+# Menggunakan transform standar dari torchvision yang sudah terbukti stabil
+transform = transforms.Compose([
+    transforms.Resize(MODEL_INPUT_SIZE),
+    transforms.CenterCrop(MODEL_CROP_SIZE),
+    transforms.ToTensor(), # Ini akan mengubah PIL Image ke Tensor dan menskalakan ke [0,1]
+    transforms.Normalize(mean=[0.43216, 0.394666, 0.37645], std=[0.22803, 0.22145, 0.216989]),
+])
+
+# --- 5. Inisialisasi & Loop Utama ---
+frame_buffer = collections.deque(maxlen=CLIP_LENGTH)
+display_prediction = "Initializing..."
+prediction_buffer_count = 0
+
+print("Membuka kamera... Lakukan aksi! Tekan 'q' untuk keluar.")
+cap = cv2.VideoCapture(CAMERA_INDEX)
+if not cap.isOpened():
+    print(f"Error: Kamera dengan indeks {CAMERA_INDEX} tidak dapat dibuka.")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Tambahkan frame mentah (NumPy array) ke buffer
+    frame_buffer.append(frame)
+
+    # --- Jika buffer sudah penuh, lakukan inferensi ---
+    if len(frame_buffer) == CLIP_LENGTH:
+        
+        # --- BLOK YANG DIPERBARUI ---
+        clip = []
+        # Loop melalui setiap frame di buffer
+        for f in frame_buffer:
+            # Konversi frame dari OpenCV (BGR) ke PIL (RGB)
+            img_pil = Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+            # Terapkan transformasi ke satu frame
+            transformed_frame = transform(img_pil)
+            clip.append(transformed_frame)
+        
+        # Tumpuk list tensor menjadi satu tensor besar
+        # Hasilnya akan memiliki shape (C, T, H, W)
+        input_tensor = torch.stack(clip, dim=1)
+        
+        # Tambahkan dimensi batch dan pindahkan ke GPU
+        input_for_model = input_tensor.unsqueeze(0).to(device)
+        # --- AKHIR BLOK YANG DIPERBARUI ---
+
+        # Lakukan inferensi (sama seperti sebelumnya)
+        with torch.no_grad():
+            outputs = model(input_for_model)
+        
+        probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
+        top1_prob, top1_catid = torch.topk(probabilities, 1)
+        
+        prediction_label = categories[top1_catid[0].item()]
+        prediction_score = top1_prob[0].item()
+        
+        display_prediction = f"{prediction_label}: {prediction_score*100:.1f}%"
+        prediction_buffer_count = PREDICTION_BUFFER_SIZE
+
+    # Tampilkan prediksi di layar
+    if prediction_buffer_count > 0:
+        cv2.putText(frame, display_prediction, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        prediction_buffer_count -= 1
+
+    # Tampilkan video
+    cv2.imshow('Real-time Action Recognition', frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# --- 6. Bersihkan ---
+print("Menutup program.")
+cap.release()
+cv2.destroyAllWindows()
